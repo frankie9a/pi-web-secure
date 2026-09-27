@@ -5,6 +5,7 @@ import {
   isUnsafeCrossSiteRequest,
   verifyAuthToken,
 } from "@/lib/web-auth";
+import { safeLoginDestination } from "@/lib/login-destination";
 
 const PUBLIC_PATHS = new Set([
   "/login",
@@ -60,8 +61,10 @@ export function proxy(request: NextRequest) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     loginUrl.search = "";
-    const returnTo = `${pathname}${search}`;
-    if (returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+    // Same policy the login page applies to the value it reads back: a leading
+    // "/" does not prove the target is local, so let the URL parser decide.
+    const returnTo = safeLoginDestination(`${pathname}${search}`, request.nextUrl.origin);
+    if (returnTo !== "/") {
       loginUrl.searchParams.set("returnTo", returnTo);
     }
     return secureResponse(NextResponse.redirect(loginUrl));

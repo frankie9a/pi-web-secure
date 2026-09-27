@@ -71,6 +71,12 @@ interface ExtensionRunnerLike {
     description?: string;
     sourceInfo: SlashCommandInfo["sourceInfo"];
   }>;
+  /**
+   * Session event emitter. Typed as `unknown` because the SDK's runner exposes a
+   * generic `emit<TEvent extends RunnerEmitEvent>` that is not assignable to any
+   * concrete call signature; the single call site narrows it explicitly.
+   */
+  emit?: unknown;
   setUIContext?(uiContext?: unknown, mode?: "tui" | "rpc" | "json" | "print"): void;
 }
 
@@ -132,6 +138,8 @@ export interface AgentSessionLike {
 
   readonly bindExtensions?: unknown;
   reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void>;
+  /** Present on pi >= 0.84; missing implementations simply skip resource reaping. */
+  dispose?: () => void;
   subscribe(listener: (event: AgentSessionEvent) => void): () => void;
   prompt(text: string, options?: {
     images?: Array<{ type: "image"; data: string; mimeType: string }>;

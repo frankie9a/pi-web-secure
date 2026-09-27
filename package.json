@@ -1,6 +1,6 @@
 {
   "name": "pi-web-secure",
-  "version": "0.8.0-secure.5",
+  "version": "0.8.0-secure.6",
   "private": true,
   "description": "Security-focused PWA and file-workflow fork of agegr/pi-web",
   "homepage": "https://github.com/zhuguadundan/pi-web-secure#readme",

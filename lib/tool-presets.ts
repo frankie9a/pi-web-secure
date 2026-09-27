@@ -4,7 +4,14 @@ export interface ToolEntry {
   active: boolean;
 }
 
-export type ToolPreset = "none" | "default" | "full";
+/**
+ * `configured` is not a tool list: it means "send no override", so pi resolves
+ * the loadout from `settings.json` `defaultTools` exactly like the `pi` CLI
+ * does. Sessions left on it stay unpinned and keep following that setting.
+ */
+export const CONFIGURED_TOOL_PRESET = "configured";
+
+export type ToolPreset = typeof CONFIGURED_TOOL_PRESET | "none" | "default" | "full";
 
 export const PRESET_NONE: string[] = [];
 export const PRESET_DEFAULT: string[] = ["read", "bash", "edit", "write"];
@@ -24,10 +31,19 @@ export function getPresetFromTools(tools: ToolEntry[]): ToolPreset {
 
   if (active === [...PRESET_DEFAULT].sort().join(",")) return "default";
   if (active === [...PRESET_FULL].sort().join(",")) return "full";
-  return "default";
+  // Built-in tools that match neither preset came from pi's configured
+  // `defaultTools`, so report the session as following the configuration
+  // rather than mislabelling it as one of the presets.
+  return CONFIGURED_TOOL_PRESET;
 }
 
-export function getToolNamesForPreset(preset: ToolPreset): string[] {
+/**
+ * `undefined` means "send no override" so the session follows pi's setting.
+ * Callers must omit the tool list entirely instead of sending an empty one:
+ * an empty array is the explicit "all tools off" preset.
+ */
+export function getToolNamesForPreset(preset: ToolPreset): string[] | undefined {
+  if (preset === CONFIGURED_TOOL_PRESET) return undefined;
   if (preset === "none") return [...PRESET_NONE];
   if (preset === "full") return [...PRESET_FULL];
   return [...PRESET_DEFAULT];

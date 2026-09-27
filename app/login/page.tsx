@@ -1,10 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-
-function safeReturnTo(value: string | null): string {
-  return value && value.startsWith("/") && !value.startsWith("//") ? value : "/";
-}
+import { safeLoginDestination } from "@/lib/login-destination";
 
 export default function LoginPage() {
   const [password, setPassword] = useState("");
@@ -28,7 +25,7 @@ export default function LoginPage() {
         throw new Error(body.error || "Sign in failed");
       }
       const returnTo = new URLSearchParams(window.location.search).get("returnTo");
-      window.location.replace(safeReturnTo(returnTo));
+      window.location.replace(safeLoginDestination(returnTo, window.location.origin));
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : "Sign in failed");
       setSubmitting(false);

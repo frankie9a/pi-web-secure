@@ -6,6 +6,7 @@ import { invalidateModelsCache } from "./models-cache";
 import { cacheSessionPath, invalidateSessionListCache, readLatestSessionEntryId } from "./session-reader";
 import { resolveSessionIdleTimeoutMs } from "./session-idle-timeout";
 import { PLAIN_TEXT_THEME } from "./plain-text-theme";
+import { PRESET_DEFAULT } from "./tool-presets";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type { ExtensionUiRequest, ExtensionUiResponse, ExtensionWidgetItem } from "./types";
@@ -60,21 +61,33 @@ type ExtensionBindingOptions = {
   forceEmptySystemPrompt?: boolean;
 };
 
+type TranscriptSystemMessage = {
+  role: string;
+  content?: unknown;
+  sections?: Record<string, string | null>;
+  toolsAdded?: unknown;
+};
+
+type TranscriptStateLike = {
+  messages?: TranscriptSystemMessage[];
+};
+
 const CODING_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 
 const CUSTOM_UI_KEYBINDINGS = new TuiKeybindingsManager(TUI_KEYBINDINGS);
 const SESSION_IDLE_TIMEOUT_MS = resolveSessionIdleTimeoutMs();
 
-function withExtensionTools(session: AgentSessionLike, toolNames: string[]): string[] {
-  if (toolNames.length === 0) return [];
-
+function extensionToolNames(session: AgentSessionLike): string[] {
   const codingToolNames = new Set(CODING_TOOL_NAMES);
-  const extensionToolNames = session
+  return session
     .getAllTools()
     .map((t) => t.name)
     .filter((name) => !codingToolNames.has(name));
+}
 
-  return [...new Set([...toolNames, ...extensionToolNames])];
+function withExtensionTools(session: AgentSessionLike, toolNames: string[]): string[] {
+  if (toolNames.length === 0) return [];
+  return [...new Set([...toolNames, ...extensionToolNames(session)])];
 }
 
 // ============================================================================
@@ -98,6 +111,8 @@ export class AgentSessionWrapper {
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private onDestroyCallback: (() => void) | null = null;
   private _alive = true;
+  private sessionShutdownEmitted = false;
+  private forcedEmptyPromptBackup = new Map<TranscriptSystemMessage, { content?: unknown; sections?: Record<string, string | null>; toolsAdded?: unknown }>();
 
   constructor(public readonly inner: AgentSessionLike) {}
 
@@ -220,10 +235,44 @@ export class AgentSessionWrapper {
     return type === "prompt" || type === "steer" || type === "follow_up" || type === "get_commands";
   }
 
+  /**
+   * Pi keeps the system prompt and tool declarations inside the transcript and
+   * exposes `state.systemPrompt` as a getter only, so an empty prompt is produced
+   * by neutralising every system message. Assigning to `state.systemPrompt` throws
+   * (`Cannot set property systemPrompt ... which has only a getter`), which used to
+   * make the "no tools" preset fail after the session had started.
+   *
+   * The wiped values are kept per message so leaving the preset restores the prompt
+   * instead of leaving the session permanently promptless.
+   */
   private applyForcedEmptySystemPrompt(): void {
-    if (this.forceEmptySystemPrompt && this.inner.agent.state) {
-      this.inner.agent.state.systemPrompt = "";
+    const state = this.inner.agent.state as TranscriptStateLike | undefined;
+    if (!state?.messages) return;
+
+    if (this.forceEmptySystemPrompt) {
+      for (const message of state.messages) {
+        if (message.role !== "system") continue;
+        if (!this.forcedEmptyPromptBackup.has(message)) {
+          this.forcedEmptyPromptBackup.set(message, {
+            content: message.content,
+            ...(message.sections ? { sections: message.sections } : {}),
+            ...(message.toolsAdded ? { toolsAdded: message.toolsAdded } : {}),
+          });
+        }
+        message.content = "";
+        if (message.sections) message.sections = {};
+        if (message.toolsAdded) delete message.toolsAdded;
+      }
+      return;
     }
+
+    if (this.forcedEmptyPromptBackup.size === 0) return;
+    for (const [message, saved] of this.forcedEmptyPromptBackup) {
+      message.content = saved.content;
+      if (saved.sections) message.sections = saved.sections;
+      if (saved.toolsAdded) message.toolsAdded = saved.toolsAdded;
+    }
+    this.forcedEmptyPromptBackup.clear();
   }
 
   private emit(event: AgentEvent): void {
@@ -510,9 +559,20 @@ export class AgentSessionWrapper {
       }
 
       case "set_tools": {
-        const toolNames = command.toolNames as string[];
-        this.setForceEmptySystemPrompt(toolNames.length === 0);
-        this.inner.setActiveToolsByName(withExtensionTools(this.inner, toolNames));
+        const requested = command.toolNames as string[] | undefined;
+        // `undefined` means "follow pi's configured defaultTools" rather than
+        // pinning a list of our own, mirroring the `pi` CLI. An explicitly empty
+        // list stays the "all tools off" preset. A configured empty list disables
+        // the built-ins only, so extension tools must stay active.
+        const configured = requested ?? this.inner.settingsManager.getDefaultTools() ?? [...PRESET_DEFAULT];
+        // An explicit empty list is the "all tools off" preset. An empty list that
+        // came from the configuration disables the built-ins only, so extension
+        // tools must stay active.
+        const activeTools = configured.length === 0
+          ? (requested === undefined ? extensionToolNames(this.inner) : [])
+          : withExtensionTools(this.inner, configured);
+        this.setForceEmptySystemPrompt(requested !== undefined && requested.length === 0);
+        this.inner.setActiveToolsByName(activeTools);
         this.applyForcedEmptySystemPrompt();
         return null;
       }
@@ -587,7 +647,38 @@ export class AgentSessionWrapper {
     for (const id of Array.from(this.activeCustomUis.keys())) this.closeCustomUi(id, undefined);
     this.pendingUiResponses.clear();
     this.pendingUiRequests.clear();
-    this.onDestroyCallback?.();
+
+    // Releasing the inner session is what reaps extension-owned resources such
+    // as MCP children; without it an idle-recycled or forked-away session kept
+    // them alive for the life of the process. Extensions get a shutdown notice
+    // first, which may be asynchronous, so dispose runs in the settled callback.
+    const finishDispose = () => {
+      try {
+        this.inner.dispose?.();
+      } catch (error) {
+        console.error("[pi-web] session dispose failed:", error instanceof Error ? error.message : error);
+      } finally {
+        this.onDestroyCallback?.();
+      }
+    };
+
+    const emit = this.inner.extensionRunner?.emit as
+      | ((event: { type: string; reason: string }) => Promise<unknown>)
+      | undefined;
+    if (this.sessionShutdownEmitted || typeof emit !== "function") {
+      finishDispose();
+      return;
+    }
+    this.sessionShutdownEmitted = true;
+    const runner = this.inner.extensionRunner;
+    void (async () => emit.call(runner, { type: "session_shutdown", reason: "quit" }))()
+      .catch((error) => {
+        console.error(
+          "[pi-web] session_shutdown before dispose failed:",
+          error instanceof Error ? error.message : error,
+        );
+      })
+      .finally(finishDispose);
   }
 
   private resolveExtensionUiResponse(response: ExtensionUiResponse): void {

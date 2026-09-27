@@ -16,7 +16,7 @@ import {
   streamReducer,
   type ClientAssistantMessageEvent,
 } from "@/lib/streaming-message";
-import { getToolNamesForPreset, type ToolEntry } from "@/lib/tool-presets";
+import { CONFIGURED_TOOL_PRESET, getToolNamesForPreset, type ToolEntry, type ToolPreset } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 
 export interface SessionData {
@@ -130,7 +130,7 @@ export interface UseAgentSessionOptions {
   onBranchDataChange?: (tree: SessionTreeNode[], activeLeafId: string | null, onLeafChange: (leafId: string | null) => void) => void;
   onSystemPromptChange?: (prompt: string | null) => void;
   onSessionStatsPanelOpen?: () => void;
-  setToolPreset?: (preset: "none" | "default" | "full") => void;
+  setToolPreset?: (preset: ToolPreset) => void;
 }
 
 export type ThinkingLevelOption = "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -325,7 +325,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [modelThinkingLevelMaps, setModelThinkingLevelMaps] = useState<Record<string, Record<string, string | null>>>({});
   const [newSessionModel, setNewSessionModel] = useState<SelectedModel | null>(null);
   const [newSessionDefaultModel, setNewSessionDefaultModel] = useState<SelectedModel | null>(null);
-  const [toolPreset, setToolPreset] = useState<"none" | "default" | "full">("default");
+  const [toolPreset, setToolPreset] = useState<ToolPreset>(CONFIGURED_TOOL_PRESET);
   const [thinkingLevel, setThinkingLevel] = useState<ThinkingLevelOption>("auto");
   const [retryInfo, setRetryInfo] = useState<{ attempt: number; maxAttempts: number; errorMessage?: string } | null>(null);
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
@@ -536,7 +536,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         body: JSON.stringify({
           cwd: newSessionCwd,
           type: "ensure_session",
-          toolNames,
+          // Omitted for the "configured" preset so pi resolves defaultTools itself.
+          ...(toolNames !== undefined ? { toolNames } : {}),
           ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
           ...(thinkingLevel !== "auto" ? { thinkingLevel } : {}),
         }),
@@ -1478,13 +1479,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, []);
 
-  const handleToolPresetChange = useCallback(async (preset: "none" | "default" | "full") => {
+  const handleToolPresetChange = useCallback(async (preset: ToolPreset) => {
     const toolNames = getToolNamesForPreset(preset);
     setToolPresetState(preset);
     const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
     if (!sid) return;
     try {
-      await sendAgentCommand(sid, { type: "set_tools", toolNames });
+      // `configured` sends no tool list, which tells rpc-manager to fall back to
+      // pi's configured defaultTools instead of pinning a preset onto the session.
+      await sendAgentCommand(sid, {
+        type: "set_tools",
+        ...(toolNames !== undefined ? { toolNames } : {}),
+      });
     } catch (e) {
       console.error("Failed to set tools:", e);
     }

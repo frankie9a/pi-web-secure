@@ -2,6 +2,7 @@
 
 import React, { useRef, useState, useCallback, useEffect, useImperativeHandle, forwardRef, KeyboardEvent } from "react";
 import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
+import { CONFIGURED_TOOL_PRESET, type ToolPreset } from "@/lib/tool-presets";
 import type { TextContent, UserMessage } from "@/lib/types";
 import { clearDraft, getDraft, setDraft, type ChatDraftImage } from "@/lib/draft-store";
 import {
@@ -40,8 +41,8 @@ interface Props {
   isCompacting?: boolean;
   compactError?: string | null;
   compactResult?: CompactResultInfo | null;
-  toolPreset?: "none" | "default" | "full";
-  onToolPresetChange?: (preset: "none" | "default" | "full") => void;
+  toolPreset?: ToolPreset;
+  onToolPresetChange?: (preset: ToolPreset) => void;
   thinkingLevel?: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   onThinkingLevelChange?: (level: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max") => void;
   availableThinkingLevels?: string[] | null;
@@ -69,8 +70,19 @@ export interface ChatInputHandle {
   addImages: (files: File[]) => void;
 }
 
-const TOOL_PRESETS = ["off", "default", "full"] as const;
-const TOOL_PRESET_MAP: Record<"off" | "default" | "full", "none" | "default" | "full"> = { off: "none", default: "default", full: "full" };
+const TOOL_PRESETS = ["auto", "off", "default", "full"] as const;
+const TOOL_PRESET_MAP: Record<"auto" | "off" | "default" | "full", ToolPreset> = {
+  auto: CONFIGURED_TOOL_PRESET,
+  off: "none",
+  default: "default",
+  full: "full",
+};
+const TOOL_PRESET_DESCRIPTIONS: Record<"auto" | "off" | "default" | "full", string> = {
+  auto: "Follow pi settings",
+  off: "No tools, read-only",
+  default: "4 built-in tools",
+  full: "All built-in tools",
+};
 const COMPOSITION_END_ENTER_GRACE_MS = 100;
 const MODEL_OPTION_COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
@@ -883,7 +895,7 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (lvl === "auto" || !thinkingLevelMap) return lvl;
     return thinkingLevelMap[lvl] ?? lvl;
   })();
-  const toolPresetLabel = Object.entries(TOOL_PRESET_MAP).find(([, v]) => v === (toolPreset ?? "default"))?.[0] ?? "default";
+  const toolPresetLabel = Object.entries(TOOL_PRESET_MAP).find(([, v]) => v === (toolPreset ?? CONFIGURED_TOOL_PRESET))?.[0] ?? "auto";
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -1803,8 +1815,8 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   }}>
                     {TOOL_PRESETS.map((lvl) => {
                       const preset = TOOL_PRESET_MAP[lvl];
-                      const isActive = (toolPreset ?? "default") === preset;
-                      const desc = lvl === "off" ? "No tools, read-only" : lvl === "default" ? "4 built-in tools" : "All built-in tools";
+                      const isActive = (toolPreset ?? CONFIGURED_TOOL_PRESET) === preset;
+                      const desc = TOOL_PRESET_DESCRIPTIONS[lvl];
                       return (
                         <button
                           key={lvl}

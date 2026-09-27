@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useIsMobile } from "@/hooks/useIsMobile";
+import { ProviderUsageSummary } from "./ProviderUsageSummary";
 import type { DiscoveredModel } from "@/lib/model-discovery";
 import type { ModelCatalogPreset, ModelCatalogRecommendation } from "@/lib/model-catalog";
 // Color icons (have their own fill colors — no background needed)
@@ -1656,6 +1657,9 @@ export function ModelsConfig({ onClose }: { onClose: () => void }) {
   const [defaultModel, setDefaultModel] = useState<{ provider: string; modelId: string } | null>(null);
   const [defaultModelSaving, setDefaultModelSaving] = useState(false);
   const [defaultModelError, setDefaultModelError] = useState<string | null>(null);
+  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
+  const [catalogRefreshMessage, setCatalogRefreshMessage] = useState<string | null>(null);
+  const [usageRefreshKey, setUsageRefreshKey] = useState(0);
 
   const loadOAuthProviders = useCallback(() => {
     fetch("/api/auth/providers")
@@ -1668,6 +1672,16 @@ export function ModelsConfig({ onClose }: { onClose: () => void }) {
     fetch("/api/auth/all-providers")
       .then((r) => r.json())
       .then((d: { providers: ApiKeyProvider[] }) => setApiKeyProviders(d.providers))
+      .catch(() => {});
+  }, []);
+
+  const loadModelList = useCallback(() => {
+    return fetch("/api/models")
+      .then((r) => r.json())
+      .then((d: { modelList?: { id: string; name: string; provider: string }[]; defaultModel?: { provider: string; modelId: string } | null }) => {
+        setModelList(d.modelList ?? []);
+        setDefaultModel(d.defaultModel ?? null);
+      })
       .catch(() => {});
   }, []);
 
@@ -1684,14 +1698,31 @@ export function ModelsConfig({ onClose }: { onClose: () => void }) {
       .finally(() => setLoading(false));
     loadOAuthProviders();
     loadApiKeyProviders();
-    fetch("/api/models")
-      .then((r) => r.json())
-      .then((d: { modelList?: { id: string; name: string; provider: string }[]; defaultModel?: { provider: string; modelId: string } | null }) => {
-        setModelList(d.modelList ?? []);
-        setDefaultModel(d.defaultModel ?? null);
+    void loadModelList();
+  }, [loadOAuthProviders, loadApiKeyProviders, loadModelList]);
+
+  // pi's built-in model lists are baked in when the SDK is built, so a model a
+  // provider ships afterwards stays invisible until the catalog overlay is
+  // revalidated. This runs that pass on demand instead of requiring a CLI run.
+  const refreshCatalog = useCallback(() => {
+    setCatalogRefreshing(true);
+    setCatalogRefreshMessage(null);
+    fetch("/api/models/refresh", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })
+      .then(async (response) => {
+        const data = await response.json() as { error?: string; errors?: { provider: string }[] };
+        if (!response.ok) throw new Error(data.error ?? `HTTP ${response.status}`);
+        return data;
       })
-      .catch(() => {});
-  }, [loadOAuthProviders, loadApiKeyProviders]);
+      .then((data) => {
+        const failed = data.errors?.length ?? 0;
+        setCatalogRefreshMessage(failed > 0 ? `Refreshed with ${failed} provider error${failed === 1 ? "" : "s"}` : "Catalog refreshed");
+        return Promise.all([loadModelList(), Promise.resolve(setUsageRefreshKey((key) => key + 1))]);
+      })
+      .catch((error: unknown) => {
+        setCatalogRefreshMessage(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => setCatalogRefreshing(false));
+  }, [loadModelList]);
 
   const addCustomProvider = useCallback(() => {
     let finalName = "new-provider";
@@ -1912,6 +1943,24 @@ export function ModelsConfig({ onClose }: { onClose: () => void }) {
           </select>
           {defaultModelSaving && <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Saving…</span>}
           {defaultModelError && <span style={{ fontSize: 11, color: "#f87171" }}>{defaultModelError}</span>}
+          <button
+            type="button"
+            onClick={refreshCatalog}
+            disabled={catalogRefreshing}
+            title="Revalidate provider model catalogs so newly released models appear"
+            style={{
+              height: 30, padding: "0 10px", border: "1px solid var(--border)", borderRadius: 6,
+              background: "var(--bg-panel)", color: catalogRefreshing ? "var(--text-dim)" : "var(--text-muted)",
+              cursor: catalogRefreshing ? "wait" : "pointer", fontSize: 11, whiteSpace: "nowrap",
+            }}
+          >
+            {catalogRefreshing ? "Refreshing…" : "Refresh catalog"}
+          </button>
+          {catalogRefreshMessage && <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{catalogRefreshMessage}</span>}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 18px", borderBottom: "1px solid var(--border)", flexShrink: 0, flexWrap: "wrap" }}>
+          <ProviderUsageSummary refreshKey={usageRefreshKey} />
         </div>
 
         {/* Body */}

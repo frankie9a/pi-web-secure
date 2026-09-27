@@ -80,7 +80,7 @@ lib/
   pi-types.ts          local structural types for pi SDK objects
   rpc-manager.ts      AgentSessionWrapper + registry + startRpcSession
   session-reader.ts   SessionManager wrappers + path cache + buildSessionContext adapter
-  tool-presets.ts     PRESET_NONE/DEFAULT/FULL + getPresetFromTools()
+  tool-presets.ts     PRESET_NONE/DEFAULT/FULL + CONFIGURED_TOOL_PRESET + getPresetFromTools()
   types.ts            shared TypeScript types
   normalize.ts        normalizeToolCalls() — field name mismatch between file format and our types
   worktree.ts         project/worktree resolution and git worktree operations
@@ -136,7 +136,7 @@ hooks/
 Pi stores toolCall blocks as `{type:"toolCall", id, name, arguments}` but `ToolCallContent` uses `{toolCallId, toolName, input}`. `normalizeToolCalls()` in `lib/normalize.ts` handles this — called in both `session-reader.ts` (file load) and `ChatWindow.handleAgentEvent()` (streaming).
 
 ### New session tool preset
-Tool names are passed at session creation (`POST /api/agent/new` → `toolNames[]`). For existing sessions, the active preset is inferred on mount via `get_tools` → `getPresetFromTools()`. When tools are fully disabled (`toolNames = []`), `rpc-manager.ts` passes an empty tool allow-list and forces `agent.state.systemPrompt = ""` after startup/reload/resource discovery.
+Tool names are passed at session creation (`POST /api/agent/new` → `toolNames[]`). The `configured` preset sends no list at all, so the session follows pi's `settings.json` `defaultTools` like the CLI; `get_tools` → `getPresetFromTools()` labels an existing session, and built-ins matching neither preset are reported as `configured`. When tools are fully disabled (`toolNames = []`, the `off` preset) `rpc-manager.ts` activates nothing and neutralises the transcript's system messages. Pi keeps the prompt in the transcript and exposes `state.systemPrompt` as a getter, so the wiped values are backed up per message and restored when the preset leaves `off`.
 
 ### Model defaults for new sessions
 `GET /api/models` returns `defaultModel` read from `~/.pi/agent/settings.json`. `ChatWindow` pre-selects this on mount for new sessions. `PUT /api/models/default` writes the same setting from the Models page. Do not store this pointer in `models.json`.
