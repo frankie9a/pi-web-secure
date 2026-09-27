@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
 import {
   getAllowedFileRoots,
   isFilePathAllowed,
@@ -32,6 +34,12 @@ const IGNORED_NAMES = new Set([
 ]);
 
 const IGNORED_SUFFIXES = [".pyc"];
+
+// Upload caps. The request body is buffered by the proxy before this route runs,
+// so the body cap lives in next.config.ts (proxyClientMaxBodySize) and must sit
+// above this value to leave room for multipart overhead.
+const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
+const MAX_UPLOAD_LABEL = "200 MB";
 
 const FILE_REQUEST_TYPES = ["list", "read", "download", "meta", "preview", "watch"] as const;
 type FileRequestType = typeof FILE_REQUEST_TYPES[number];
@@ -156,6 +164,24 @@ export async function POST(
       return NextResponse.json({ error: validationError }, { status: 400 });
     }
 
+    // Size limits are checked from the parsed metadata before any file content is
+    // materialised. The body itself is already buffered by the proxy, whose cap
+    // (proxyClientMaxBodySize) is what actually bounds memory; these limits keep
+    // the contract explicit and stop oversized writes.
+    const oversized = files.filter((file) => file.size > MAX_UPLOAD_BYTES);
+    if (oversized.length > 0) {
+      return NextResponse.json({
+        error: `Each file must be at most ${MAX_UPLOAD_LABEL}`,
+        errors: oversized.map((file) => ({ name: file.name, error: `Larger than ${MAX_UPLOAD_LABEL}` })),
+      }, { status: 413 });
+    }
+    const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+    if (totalBytes > MAX_UPLOAD_BYTES) {
+      return NextResponse.json({
+        error: `A single upload request must be at most ${MAX_UPLOAD_LABEL} in total`,
+      }, { status: 413 });
+    }
+
     const inspection = inspectUploadTargets(directory, fileNames);
     if (strategy === "error" && inspection.conflicts.length > 0) {
       return NextResponse.json({
@@ -182,25 +208,20 @@ export async function POST(
         continue;
       }
 
-      let bytes: Buffer;
-      try {
-        bytes = Buffer.from(await file.arrayBuffer());
-      } catch (error) {
-        errors.push({ name: file.name, error: error instanceof Error ? error.message : String(error) });
-        continue;
-      }
-
       if (conflictSet.has(file.name)) {
         try {
-          fs.unlinkSync(destination);
+          await fs.promises.unlink(destination);
         } catch (error) {
           errors.push({ name: file.name, error: error instanceof Error ? error.message : String(error) });
           continue;
         }
       }
 
+      // Streamed write: no full-size Buffer copy in the heap and no synchronous
+      // write. A blocking write used to stall the whole server (every other
+      // request, including SSE heartbeats) for the duration of the disk write.
       try {
-        fs.writeFileSync(destination, bytes, { flag: "wx" });
+        await pipeline(Readable.fromWeb(file.stream() as Parameters<typeof Readable.fromWeb>[0]), fs.createWriteStream(destination, { flags: "wx" }));
         uploaded.push(file.name);
       } catch (error) {
         errors.push({ name: file.name, error: error instanceof Error ? error.message : String(error) });

@@ -11,6 +11,7 @@ import {
   readSessionHeader,
 } from "@/lib/session-reader";
 import { getRpcSession } from "@/lib/rpc-manager";
+import { findVisibleTailStart } from "@/lib/chat-lazy-load";
 
 // BranchNavigator still traverses recursively, so keep the response tree shallow.
 const MAX_PROJECTED_TREE_DEPTH = 200;
@@ -138,6 +139,19 @@ export async function GET(
     const deferToolResultImages = searchParams.has("deferMedia");
     const context = buildSessionContext(entries, leafId, { deferThinking, deferToolResultImages });
 
+    // Optional tail window. A long session ships the whole transcript (a real one
+    // measured 1.5 MB over 777 messages) while the client paints at most its first
+    // render window; the last 150 *renderable* messages carry 80% less. Counting
+    // user/assistant messages matches what the client actually renders, so the
+    // first paint never ends up short. Callers that need everything omit `tail`.
+    const tailParam = searchParams.get("tail");
+    const requestedTail = tailParam === null ? Number.NaN : Number(tailParam);
+    const fullMessages = context.messages;
+    const totalMessages = fullMessages.length;
+    const tailApplies = Number.isSafeInteger(requestedTail) && requestedTail > 0;
+    const tailStart = tailApplies ? findVisibleTailStart(fullMessages, requestedTail) : 0;
+    const messages = tailStart > 0 ? fullMessages.slice(tailStart) : fullMessages;
+
     const header = sm.getHeader();
     let modified = header?.timestamp ?? new Date().toISOString();
     try { modified = statSync(filePath).mtime.toISOString(); } catch { /* use header timestamp */ }
@@ -151,10 +165,10 @@ export async function GET(
       name: sm.getSessionName(),
       created: header.timestamp,
       modified,
-      messageCount: context.messages.length,
-      firstMessage: context.messages.find((m) => m.role === "user")
+      messageCount: totalMessages,
+      firstMessage: fullMessages.find((m) => m.role === "user")
         ? (() => {
-            const msg = context.messages.find((m) => m.role === "user")!;
+            const msg = fullMessages.find((m) => m.role === "user")!;
             const c = (msg as { content: unknown }).content;
             return typeof c === "string" ? c : (Array.isArray(c) ? (c.find((b: { type: string }) => b.type === "text") as { text: string } | undefined)?.text ?? "" : "") || "(no messages)";
           })()
@@ -168,7 +182,9 @@ export async function GET(
       info,
       leafId,
       tree,
-      context,
+      totalMessages,
+      truncated: tailStart > 0,
+      context: { ...context, messages },
     });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

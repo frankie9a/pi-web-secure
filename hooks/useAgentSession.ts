@@ -24,6 +24,9 @@ export interface SessionData {
   filePath: string;
   tree: SessionTreeNode[];
   leafId: string | null;
+  /** Set when the server sent only a tail of the transcript. */
+  truncated?: boolean;
+  totalMessages?: number;
   context: {
     messages: AgentMessage[];
     entryIds: string[];
@@ -131,6 +134,8 @@ export interface UseAgentSessionOptions {
   onSystemPromptChange?: (prompt: string | null) => void;
   onSessionStatsPanelOpen?: () => void;
   setToolPreset?: (preset: ToolPreset) => void;
+  /** Render window the client paints first; the initial fetch asks for a tail of this size. */
+  initialPageSize?: number;
 }
 
 export type ThinkingLevelOption = "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -141,8 +146,15 @@ const PROMPT_SETTLE_INITIAL_DELAY_MS = 800;
 const PROMPT_SETTLE_POLL_MS = 600;
 const PROMPT_SETTLE_MAX_MS = 20_000;
 const AGENT_STATE_RECONCILE_MS = 15_000;
+// Extra renderable messages fetched beyond the first paint so the first scroll-up
+// stays local instead of waiting on the network.
+const TAIL_HEADROOM_MESSAGES = 50;
 const BASH_STATE_RECONCILE_MS = 1_000;
 const EVENT_STREAM_CONNECT_TIMEOUT_MS = 5_000;
+// The server sends an SSE comment heartbeat every 30s; treat 45s of silence as a
+// dead connection and poll every 15s (plus immediately on becoming visible).
+const STREAM_STALE_MS = 45_000;
+const STREAM_WATCHDOG_INTERVAL_MS = 15_000;
 const MAX_NOTICES = 5;
 const NOTICE_VISIBLE_MS = 5000;
 const NOTICE_EXIT_ANIMATION_MS = 180;
@@ -352,6 +364,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const eventConnectionPromiseRef = useRef<Promise<EventStreamConnectionResult> | null>(null);
   const eventReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectedSessionIdsRef = useRef(new Set<string>());
+  // Timestamp of the last frame (including the server's 30s heartbeat). Used to
+  // notice a half-open stream, which the browser can leave OPEN indefinitely and
+  // which is the usual state after a phone suspends the PWA.
+  const lastEventAtRef = useRef(0);
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
   const agentRunningRef = useRef(false);
   const bashRunningRef = useRef(false);
@@ -415,12 +431,32 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } satisfies SessionStatsInfo;
   }, [messages, sessionStatsOverride, contextUsage, data?.filePath, session?.id, session?.name]);
 
-  const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false) => {
+  // True while the client only holds a tail of the transcript, so later refreshes
+  // keep asking for a tail instead of silently pulling the whole history back in.
+  const historyTruncatedRef = useRef(false);
+  const loadingFullHistoryRef = useRef(false);
+  const hasLoadedRef = useRef(false);
+  const [historyTruncated, setHistoryTruncated] = useState(false);
+
+  const loadSession = useCallback(async (
+    sid: string,
+    showLoading = false,
+    includeState = false,
+    loadOptions: { fullHistory?: boolean } = {},
+  ) => {
     let messagesLoaded = false;
     try {
       if (showLoading) setLoading(true);
       const params = new URLSearchParams({ deferThinking: "1", deferMedia: "1" });
       if (showLoading) params.set("force", "1");
+      // Cold opens (and refreshes while still tail-only) fetch a bounded tail: a
+      // long transcript measured 1.5 MB while the client paints at most the last
+      // 150 renderable messages (80% less). Paging into history loads the rest.
+      // The first load for this hook instance always uses the tail, so a session
+      // switch, a page load and a PWA resume all take the fast path.
+      if (!loadOptions.fullHistory && (!hasLoadedRef.current || historyTruncatedRef.current)) {
+        params.set("tail", String((opts.initialPageSize ?? 150) + TAIL_HEADROOM_MESSAGES));
+      }
       const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}?${params}`);
       if (res.status === 404) {
         if (showLoading) {
@@ -434,6 +470,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const d = await res.json() as SessionData;
       if (sessionIdRef.current !== sid) return null;
+      historyTruncatedRef.current = d.truncated === true;
+      hasLoadedRef.current = true;
+      setHistoryTruncated(d.truncated === true);
       setData(d);
       setActiveLeafId(d.leafId);
       setMessages(d.context.messages);
@@ -476,7 +515,24 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       if (showLoading && !messagesLoaded) setLoading(false);
     }
-  }, []);
+  }, [opts.initialPageSize]);
+
+  /**
+   * Replace the tail with the whole transcript. Called when the user pages past
+   * the messages the tail contained; afterwards paging is local again. The flag is
+   * only cleared by a successful response, so a failure leaves the affordance in
+   * place for a retry.
+   */
+  const loadFullHistory = useCallback(async () => {
+    const sid = sessionIdRef.current;
+    if (!sid || !historyTruncatedRef.current || loadingFullHistoryRef.current) return;
+    loadingFullHistoryRef.current = true;
+    try {
+      await loadSession(sid, false, false, { fullHistory: true });
+    } finally {
+      loadingFullHistoryRef.current = false;
+    }
+  }, [loadSession]);
 
   const loadContext = useCallback(async (sid: string, leafId: string | null) => {
     try {
@@ -607,6 +663,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
       es.onmessage = (e) => {
         if (eventSourceRef.current !== es || sessionIdRef.current !== sid) return;
+        lastEventAtRef.current = Date.now();
         try {
           const event = JSON.parse(e.data) as AgentEvent;
           if (event.type === "connected") {
@@ -652,6 +709,34 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     eventConnectionPromiseRef.current = connection;
     return connection;
   }, []);
+
+  // Liveness watchdog. The stream carries a heartbeat every 30s, so no frame for
+  // 45s means the connection is dead while the browser still reports it OPEN —
+  // the usual state after a phone suspends the PWA. Closing it here lets the
+  // next connect (or the visibility check below) re-establish it immediately
+  // instead of waiting for the browser to notice on its own.
+  useEffect(() => {
+    const checkStaleStream = () => {
+      const sid = sessionIdRef.current;
+      if (!sid || !eventSourceRef.current) return;
+      const last = lastEventAtRef.current;
+      if (last === 0 || Date.now() - last < STREAM_STALE_MS) return;
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+      eventSourceSessionIdRef.current = null;
+      lastEventAtRef.current = 0;
+      if (sessionIdRef.current === sid) void connectEvents(sid);
+    };
+    const interval = setInterval(checkStaleStream, STREAM_WATCHDOG_INTERVAL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") checkStaleStream();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [connectEvents]);
 
   const ensureEventsConnected = useCallback(async (sid: string) => {
     const result = await connectEvents(sid);
@@ -900,6 +985,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const handleAgentEvent = useCallback((event: AgentEvent) => {
     switch (event.type) {
+      case "session_shutdown":
+        // The server recycled or replaced this wrapper. Drop the stream so the
+        // browser stops holding a connection that will never deliver an event
+        // again; the next command reconnects through connectEvents().
+        lastEventAtRef.current = 0;
+        eventSourceRef.current?.close();
+        eventSourceRef.current = null;
+        eventSourceSessionIdRef.current = null;
+        connectedSessionIdsRef.current.delete(sessionIdRef.current ?? "");
+        break;
       case "connected":
         if (event.isRunning === true) {
           agentRunningRef.current = true;
@@ -1675,6 +1770,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     isAutoModelSelection: isNew && newSessionModel === null,
     agentPhase,
     isNew,
+    historyTruncated,
+    loadFullHistory,
     // Refs
     sessionIdRef, eventSourceRef, messagesEndRef, scrollContainerRef,
     lastUserMsgRef, pendingScrollToUserRef, initialScrollDoneRef,

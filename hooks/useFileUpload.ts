@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { encodeFilePathForApi } from "@/lib/file-paths";
 
-export type UploadPhase = "idle" | "checking" | "uploading";
+export type UploadPhase = "idle" | "checking" | "uploading" | "processing";
 export type UploadConflictStrategy = "error" | "overwrite" | "skip";
 
 export interface UploadError {
@@ -114,7 +114,13 @@ export function useFileUpload({ targetDirectory, onUploaded }: UseFileUploadOpti
 
     try {
       const { status, data } = await uploadFiles(targetDirectory, files, strategy, (nextProgress) => {
-        if (operation === operationRef.current) setProgress(nextProgress);
+        if (operation !== operationRef.current) return;
+        setProgress(nextProgress);
+        // The browser reports the request body as sent long before the server has
+        // parsed the multipart body and written it to disk. Showing "100%" during
+        // that gap is what made the bar look finished while the upload was still
+        // running, so switch to an explicit processing state instead.
+        if (nextProgress >= 100) setPhase("processing");
       });
       if (operation !== operationRef.current) return;
       if (status === 409 && data.conflicts?.length) {

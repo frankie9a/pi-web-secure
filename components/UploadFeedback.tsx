@@ -76,11 +76,11 @@ export function UploadFeedback({
       }}
     >
       {busy && (
-        <div role="status" aria-live="polite" aria-label={phase === "checking" ? "Checking files" : `Uploading, ${progress}%`}>
+        <div role="status" aria-live="polite" aria-label={phase === "checking" ? "Checking files" : phase === "processing" ? "Saving files" : `Uploading, ${progress}%`}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minHeight: 16 }}>
             <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" style={{ animation: phase === "checking" ? "spin 0.8s linear infinite" : undefined }} aria-hidden="true">
-                {phase === "checking" ? (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" style={{ animation: phase === "checking" || phase === "processing" ? "spin 0.8s linear infinite" : undefined }} aria-hidden="true">
+                {phase === "checking" || phase === "processing" ? (
                   <path d="M21 12a9 9 0 1 1-5.7-8.4" />
                 ) : (
                   <>
@@ -90,13 +90,22 @@ export function UploadFeedback({
                   </>
                 )}
               </svg>
-              <span>{phase === "checking" ? "Checking files" : "Uploading files"}</span>
+              <span>{phase === "checking" ? "Checking files" : phase === "processing" ? "Saving files" : "Uploading files"}</span>
             </span>
-            {phase === "uploading" && <span style={{ fontSize: 10 }}>{progress}%</span>}
+            {phase === "uploading" && <span style={{ fontSize: 10 }}>{Math.min(progress, 99)}%</span>}
+            {phase === "processing" && <span style={{ fontSize: 10 }}>finishing</span>}
           </div>
-          {phase === "uploading" && (
+          {(phase === "uploading" || phase === "processing") && (
             <div style={{ height: 3, marginTop: 5, overflow: "hidden", borderRadius: 2, background: "var(--border)" }}>
-              <div style={{ width: `${progress}%`, height: "100%", background: "var(--accent)", transition: "width 120ms ease" }} />
+              <div
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  background: "var(--accent)",
+                  opacity: phase === "processing" ? 0.45 : 1,
+                  transition: "width 120ms ease, opacity 160ms ease",
+                }}
+              />
             </div>
           )}
         </div>

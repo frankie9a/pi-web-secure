@@ -4,6 +4,7 @@ import { forwardRef, useState, useCallback, useEffect, useImperativeHandle, useM
 import { getFileIcon, FolderIcon } from "./FileIcons";
 import { UploadFeedback } from "./UploadFeedback";
 import { useFileUpload } from "@/hooks/useFileUpload";
+import { useIsMobile } from "@/hooks/useIsMobile";
 import {
   encodeFilePathForApi,
   getFileDirectory,
@@ -112,6 +113,7 @@ function TreeNode({
   highlightedPaths,
   gitStatusByPath,
   changedDirectoryPaths,
+  isMobile,
 }: {
   node: FileNode;
   depth: number;
@@ -124,6 +126,8 @@ function TreeNode({
   highlightedPaths: Set<string>;
   gitStatusByPath: Map<string, GitFileStatus>;
   changedDirectoryPaths: Set<string>;
+  /** Touch devices have no hover, so the mention button must not be hover-gated there. */
+  isMobile: boolean;
 }) {
   const open = expandedPaths.has(node.fullPath);
   const highlighted = highlightedPaths.has(node.fullPath);
@@ -257,7 +261,7 @@ function TreeNode({
             <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4" />
           </svg>
         )}
-        {onAtMention && hovered && (
+        {onAtMention && (hovered || isMobile) && (
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -341,6 +345,7 @@ function TreeNode({
               highlightedPaths={highlightedPaths}
               gitStatusByPath={gitStatusByPath}
               changedDirectoryPaths={changedDirectoryPaths}
+              isMobile={isMobile}
             />
           ))}
           {children.length === 0 && loaded && (
@@ -364,6 +369,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
 }, ref) {
   // Use the first cwd as the primary one for uploads
   const primaryCwd = cwds[0] ?? "/";
+  const isMobile = useIsMobile();
   const [rootsByCwd, setRootsByCwd] = useState<Map<string, FileNode[]>>(new Map());
   const [loadingCwds, setLoadingCwds] = useState<Set<string>>(new Set());
   const [errorsByCwd, setErrorsByCwd] = useState<Map<string, string>>(new Map());
@@ -561,7 +567,10 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
               >
                 {cwdLabel}
               </div>
-              {loading ? (
+              {loading && roots.length === 0 ? (
+                // Only replace the tree while there is nothing to show. During a
+                // refresh the existing nodes stay mounted, which preserves each
+                // open directory's loaded children and the scroll position.
                 <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-dim)" }}>Loading files...</div>
               ) : error ? (
                 <div style={{ padding: "8px 12px", fontSize: 11, color: "#f87171" }}>{error}</div>
@@ -581,6 +590,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
                       highlightedPaths={highlightedPaths}
                       gitStatusByPath={gitStatusByPath}
                       changedDirectoryPaths={changedDirectoryPaths}
+                      isMobile={isMobile}
                     />
                   ))}
                   {roots.length === 0 && (

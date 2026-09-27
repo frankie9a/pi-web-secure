@@ -26,8 +26,10 @@ const nextConfig: NextConfig = {
   allowedDevOrigins: ['192.168.*.*'],
   experimental: {
     // Next.js default 10MB truncates multipart uploads, which surfaces as
-    // "Failed to parse body as FormData". 200MB covers large media files.
-    proxyClientMaxBodySize: 200 * 1024 * 1024,
+    // "Failed to parse body as FormData". The upload route allows 200 MB per
+    // request, so the proxy buffer sits above that with headroom for the
+    // multipart envelope; it is also what actually bounds the buffered body.
+    proxyClientMaxBodySize: 220 * 1024 * 1024,
   },
   async headers() {
     return [

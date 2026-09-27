@@ -20,6 +20,23 @@ export function getInitialPageSize(isMobile: boolean): number {
   return isMobile ? MOBILE_PAGE_SIZE : VISIBLE_PAGE_SIZE;
 }
 
+/**
+ * Index of the first message that keeps exactly `visibleLimit` user/assistant
+ * messages in the tail, so a server-sent tail fills the client's render window.
+ * Tool results and system messages ride along uncounted. Returns 0 when the
+ * transcript is already short enough (nothing to trim).
+ */
+export function findVisibleTailStart(messages: readonly { role?: string }[], visibleLimit: number): number {
+  let seen = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const role = messages[index]?.role;
+    if (role !== "user" && role !== "assistant") continue;
+    if (seen === visibleLimit) return index + 1;
+    seen += 1;
+  }
+  return 0;
+}
+
 export function captureScrollDistance(scrollHeight: number, scrollTop: number): number {
   return scrollHeight - scrollTop;
 }

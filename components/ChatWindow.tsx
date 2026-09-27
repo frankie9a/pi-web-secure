@@ -180,6 +180,8 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, onAgentEnd,
     isAutoModelSelection,
     agentPhase,
     isNew,
+    historyTruncated,
+    loadFullHistory,
     sessionIdRef, messagesEndRef, scrollContainerRef,
     lastUserMsgRef,
     handleSend, handleAbort, handleFork, handleNavigate, handleModelChange,
@@ -190,6 +192,7 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, onAgentEnd,
   } = useAgentSession({
     session, sessionRunning, newSessionCwd, onAgentEnd: wrappedOnAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
+    initialPageSize: getInitialPageSize(isMobile),
   });
   const sessionBusy = agentRunning || bashRunning;
 
@@ -218,13 +221,17 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, onAgentEnd,
           // Save distance from top before prepending to restore scroll later
           prevScrollDistanceRef.current = captureScrollDistance(container.scrollHeight, container.scrollTop);
           setVisibleCount((prev) => getNextVisibleCount(prev));
+          // When the client only holds a tail, this is also the moment to pull the
+          // rest of the transcript in. It is a no-op once the full history is in,
+          // and the end-anchored window keeps the viewport in place afterwards.
+          if (historyTruncated) void loadFullHistory();
         }
       },
       { root: container, threshold: 0 }
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [visibleCount, messages.length, scrollContainerRef]);
+  }, [visibleCount, messages.length, scrollContainerRef, historyTruncated, loadFullHistory]);
 
   // After visibleCount increases (more messages prepended), restore the
   // scroll position so the viewport doesn't jump.
@@ -640,11 +647,14 @@ export function ChatWindow({ session, sessionRunning, newSessionCwd, onAgentEnd,
                 idx = endIdx;
               }
               const { startIndex, hasMore } = getVisibleRenderWindow(rendered.length, visibleCount);
+              const canLoadEarlier = hasMore || historyTruncated;
               return (
                 <>
-                  {hasMore && (
+                  {canLoadEarlier && (
                     <div ref={sentinelRef} className="py-3 text-center text-xs text-text-muted">
-                      Scroll up to load earlier messages ({startIndex} hidden)
+                      {hasMore
+                        ? `Scroll up to load earlier messages (${startIndex} hidden)`
+                        : "Scroll up to load earlier messages"}
                     </div>
                   )}
                   {rendered.slice(startIndex)}

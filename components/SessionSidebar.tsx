@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useState, useCallback, useRef, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo, type CSSProperties, type ReactNode } from "react";
 import type { SessionInfo } from "@/lib/types";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
@@ -100,15 +100,21 @@ function loadSessionsCache(): SessionsCache | null {
   }
 }
 
+// Body of the last payload written to localStorage, without the timestamp, so an
+// unchanged list can skip the synchronous write entirely.
+let lastSessionsCacheBody: string | null = null;
+
 function saveSessionsCache(sessions: SessionInfo[], runningSessionIds: string[]): void {
   if (typeof window === "undefined") return;
   try {
-    const cache: SessionsCache = {
-      sessions,
-      runningSessionIds,
-      timestamp: Date.now(),
-    };
+    const body = JSON.stringify({ sessions, runningSessionIds });
+    // The list is refetched often (every turn end) and the payload is ~100 KB.
+    // localStorage.setItem is synchronous and blocks the main thread, so only
+    // write when the data actually changed.
+    if (body === lastSessionsCacheBody && window.localStorage.getItem(SESSIONS_CACHE_KEY)) return;
+    const cache: SessionsCache = { sessions, runningSessionIds, timestamp: Date.now() };
     window.localStorage.setItem(SESSIONS_CACHE_KEY, JSON.stringify(cache));
+    lastSessionsCacheBody = body;
   } catch {
     // ignore storage quota / privacy-mode errors
   }
@@ -473,7 +479,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   useEffect(() => {
     const isFirst = !initialLoadDone.current;
     initialLoadDone.current = true;
-    loadSessions(isFirst, !isFirst);
+    // Routine refreshes read the cached list: the server invalidates its list
+    // cache on every session mutation (agent_end, fork, rename, delete), so a
+    // forced rescan only adds ~0.9s of directory scanning per refresh.
+    loadSessions(isFirst, false);
   }, [loadSessions, refreshKey]);
 
   // Persist unread markers so they survive a browser refresh before the user
@@ -526,6 +535,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         void poll();
+        // The running poll only carries ids. A phone that was suspended for a
+        // while also needs the list itself (names, counts, new sessions).
+        void loadSessions(false, false);
       } else {
         clearTimer();
         controller?.abort();
@@ -541,7 +553,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       controller?.abort();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, []);
+  }, [loadSessions]);
 
   useEffect(() => {
     const previous = previousRunningSessionIdsRef.current;
@@ -858,7 +870,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     onNewSession?.(tempId, selectedCwd);
   }, [selectedCwd, onNewSession]);
 
-  const workspaceShortcuts = getWorkspaceShortcuts(homeDir);
+  const workspaceShortcuts = useMemo(() => getWorkspaceShortcuts(homeDir), [homeDir]);
+  // Stable identity: the explorer reloads a directory when this array changes,
+  // and it is rebuilt on every render otherwise. Fixing the reference here keeps
+  // unrelated re-renders (opening a file, panel toggles) from refetching the tree.
+  const explorerCwds = useMemo(
+    () => workspaceShortcuts.map((shortcut) => shortcut.path).filter((path) => path),
+    [workspaceShortcuts],
+  );
   const workspacePaths = new Set(workspaceShortcuts.map((shortcut) => shortcut.path));
   const recentProjects = getRecentProjects(allSessions).filter((project) => !workspacePaths.has(project));
   const showProjectFilter = recentProjects.length > 8;
@@ -1731,7 +1750,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
             <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden" }}>
               <FileExplorer
                 ref={fileExplorerRef}
-                cwds={workspaceShortcuts.map((ws) => ws.path).filter((p) => p)}
+                cwds={explorerCwds}
                 onOpenFile={onOpenFile ?? (() => {})}
                 refreshKey={explorerKey}
                 onAtMention={onAtMention}

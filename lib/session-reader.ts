@@ -13,6 +13,22 @@ import { resolveProject, type ProjectInfo } from "./worktree";
 
 export { getAgentDir };
 
+const SESSION_PREVIEW_MAX_CHARS = 200;
+
+/**
+ * The sidebar shows the first message as a one-line preview, but the list was
+ * carrying it verbatim: a single pasted prompt produced a 20 KB entry and the
+ * whole list is refetched regularly. Cap the preview at the copy the UI uses.
+ */
+export function previewFirstMessage(value: string | undefined): string {
+  const text = (value ?? "").trim();
+  if (!text) return "(no messages)";
+  const characters = Array.from(text);
+  return characters.length > SESSION_PREVIEW_MAX_CHARS
+    ? `${characters.slice(0, SESSION_PREVIEW_MAX_CHARS).join("").trimEnd()}…`
+    : text;
+}
+
 async function loadAllSessions(): Promise<SessionInfo[]> {
   const piSessions: PiSessionInfo[] = await SessionManager.listAll();
   const pathToId = new Map<string, string>();
@@ -37,7 +53,7 @@ async function loadAllSessions(): Promise<SessionInfo[]> {
       created: s.created instanceof Date ? s.created.toISOString() : String(s.created),
       modified: s.modified instanceof Date ? s.modified.toISOString() : String(s.modified),
       messageCount: s.messageCount,
-      firstMessage: s.firstMessage || "(no messages)",
+      firstMessage: previewFirstMessage(s.firstMessage),
       parentSessionId: s.parentSessionPath ? pathToId.get(normalizePath(s.parentSessionPath)) : undefined,
       projectRoot: project?.projectRoot ?? s.cwd,
       ...(project?.isWorktree && project.branch ? { worktreeBranch: project.branch } : {}),
