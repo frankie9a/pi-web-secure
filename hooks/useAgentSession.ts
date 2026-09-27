@@ -269,7 +269,7 @@ function imageSignature(block: unknown): string {
   ].join(":");
 }
 
-function userMessageKey(message: Partial<AgentMessage>): string {
+export function userMessageKey(message: Partial<AgentMessage>): string {
   const content = (message as { content?: unknown }).content;
   if (typeof content === "string") return JSON.stringify({ text: content, images: [] });
   if (!Array.isArray(content)) return JSON.stringify({ text: "", images: [] });
@@ -277,6 +277,38 @@ function userMessageKey(message: Partial<AgentMessage>): string {
     text: extractMessageText(message),
     images: content.map(imageSignature).filter(Boolean),
   });
+}
+
+// How far back a delivered user message may look for the optimistic bubble that
+// handleSend inserted. pi emits the transcript's tool-declaration `system`
+// message between the optimistic append and the user echo, so the bubble is not
+// necessarily the last element.
+const OPTIMISTIC_LOOKBACK = 4;
+
+/**
+ * Merge the server's echo of a user message into the local list.
+ *
+ * The optimistic bubble is matched by content anywhere in the last few entries
+ * and replaced *in place*, so an interleaved message cannot leave two copies of
+ * the same prompt on screen. Without a matching optimistic key the message is
+ * appended, which keeps later same-text queue deliveries visible.
+ */
+export function mergeDeliveredUserMessage(
+  messages: AgentMessage[],
+  delivered: AgentMessage,
+  optimisticKey: string | null,
+): AgentMessage[] {
+  if (optimisticKey) {
+    const lowestIndex = Math.max(0, messages.length - OPTIMISTIC_LOOKBACK);
+    for (let index = messages.length - 1; index >= lowestIndex; index -= 1) {
+      const candidate = messages[index];
+      if (candidate.role !== "user" || userMessageKey(candidate) !== optimisticKey) continue;
+      // The local bubble already carries this text: keep it (and its timestamp).
+      if (userMessageKey(delivered) === optimisticKey) return messages;
+      return [...messages.slice(0, index), delivered, ...messages.slice(index + 1)];
+    }
+  }
+  return [...messages, delivered];
 }
 
 function readCompactResult(result: unknown, reason: string): CompactResultInfo | null {
@@ -1077,23 +1109,21 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (completed && completed.role === "user") {
           // Delivered steering/follow-up messages surface here as user
           // messages. The run's initial prompt also emits one, but handleSend
-          // already appended it optimistically. Consume only the still-adjacent
-          // optimistic bubble; later same-text queue deliveries must render.
+          // already appended it optimistically. Consume only the optimistic
+          // bubble; later same-text queue deliveries must render.
           const delivered = normalizeToolCalls(completed);
-          const deliveredKey = userMessageKey(delivered);
           const optimisticKey = optimisticUserMessageKeyRef.current;
           optimisticUserMessageKeyRef.current = null;
-          setMessages((prev) => {
-            const last = prev[prev.length - 1];
-            if (optimisticKey && last?.role === "user" && userMessageKey(last) === optimisticKey) {
-              return optimisticKey === deliveredKey
-                ? prev
-                : [...prev.slice(0, -1), delivered];
-            }
-            return [...prev, delivered];
-          });
+          setMessages((prev) => mergeDeliveredUserMessage(prev, delivered, optimisticKey));
         } else if (completed) {
-          setMessages((prev) => [...prev, normalizeToolCalls(completed)]);
+          // The transcript's system messages (prompt and tool declarations) are
+          // not chat content: the UI never renders them, and appending them only
+          // shifts every later entry's position. The UI message type does not
+          // model them, so widen before comparing.
+          const role: string = completed.role;
+          if (role !== "system") {
+            setMessages((prev) => [...prev, normalizeToolCalls(completed)]);
+          }
         }
         dispatch({ type: "end" });
         setAgentPhase({ kind: "waiting_model" });
