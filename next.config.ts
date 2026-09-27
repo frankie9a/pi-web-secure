@@ -11,6 +11,11 @@ try {
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: __dirname,
+  // next/image is unused (the only image is a static file), so the /_next/image
+  // optimizer is turned off entirely. That removes the sharp/libheif path and the
+  // unauthenticated optimizer endpoint, which Next 16.0.0-16.3.2 exposed to
+  // GHSA-2xp9-vwfh-vxw4 / GHSA-p293-qw3h-jr36.
+  images: { unoptimized: true },
   serverExternalPackages: [
     "undici",
     "@earendil-works/pi-coding-agent",
