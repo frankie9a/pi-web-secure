@@ -6,8 +6,41 @@ export const MIN_AUTH_PASSWORD_LENGTH = 10;
 
 const TOKEN_VERSION = "v1";
 
+// The login password is kept here, not in process.env, so it cannot leak into
+// child processes. See captureAuthPasswordFromEnvironment below.
+declare global {
+  var __piWebAuthPassword: string | undefined;
+}
+
+/**
+ * Read the login password out of the environment and remove the variable.
+ *
+ * The agent bash tool, direct user shell commands and the built-in terminal all
+ * inherit this server's environment. Leaving the password there let a plain
+ * `env` put the web login password into the model context and the session
+ * transcript. Capturing it once (the value stays available to this process via
+ * globalThis) and deleting the variable keeps authentication working while
+ * leaving nothing for a child process to inherit.
+ *
+ * Called from the Node instrumentation at startup and lazily on first use, so
+ * the variable is gone before any agent session can spawn a shell.
+ */
+export function captureAuthPasswordFromEnvironment(): void {
+  const fromEnvironment = process.env.PI_WEB_AUTH_PASSWORD;
+  if (typeof fromEnvironment === "string" && fromEnvironment.length > 0) {
+    globalThis.__piWebAuthPassword = fromEnvironment;
+  }
+  try {
+    delete process.env.PI_WEB_AUTH_PASSWORD;
+  } catch {
+    // Some runtimes expose a frozen process.env; the cached value above still
+    // keeps authentication working for this process.
+  }
+}
+
 export function getAuthPassword(): string | null {
-  const password = process.env.PI_WEB_AUTH_PASSWORD;
+  if (globalThis.__piWebAuthPassword === undefined) captureAuthPasswordFromEnvironment();
+  const password = globalThis.__piWebAuthPassword;
   return password && password.length > 0 ? password : null;
 }
 
