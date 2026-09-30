@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, type CSSProperties, type MouseEvent } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo, type CSSProperties, type MouseEvent } from "react";
 import {
   Prism as SyntaxHighlighter,
   createElement as renderSyntaxNode,
@@ -19,7 +19,7 @@ import {
 } from "@/lib/file-types";
 import { encodeFilePathForApi, getFileDirectory, getFileName, getRelativeFilePath } from "@/lib/file-paths";
 import { resolveLocalFileHref } from "@/lib/file-links";
-import { markdownPreviewRehypePlugins, markdownPreviewRemarkPlugins } from "@/lib/markdown";
+import { markdownPreviewRehypePlugins, markdownPreviewRemarkPlugins, normalizeDisplayMath } from "@/lib/markdown";
 import { parseUnifiedPatch } from "@/lib/patch";
 import type { GitFileDiffResponse } from "@/lib/git-types";
 
@@ -733,6 +733,14 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, gitRefresh
   const esRef = useRef<EventSource | null>(null);
   const gitDiffRequestRef = useRef(0);
 
+  // Preview shares the chat math pipeline: LaTeX delimiters and model-emitted
+  // bracket-only lines are normalized before remark-math sees them. Declared
+  // here, before the early returns below, so the hook order stays stable.
+  const markdownPreviewSource = useMemo(
+    () => (data?.language === "markdown" ? normalizeDisplayMath(data.content) : ""),
+    [data],
+  );
+
   const fetchContent = useCallback((filePath: string) => {
     return fetch(getFileApiUrl(filePath, "read", sourceSessionId))
       .then((r) => r.json())
@@ -1004,7 +1012,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, gitRefresh
                 },
               }}
             >
-              {data.content}
+              {isMarkdown ? markdownPreviewSource : data.content}
             </ReactMarkdown>
           </div>
         ) : (

@@ -9,6 +9,7 @@ const jiti = createJiti(import.meta.url, {
   tsconfigPaths: true,
 });
 const { MarkdownBody } = await jiti.import("./MarkdownBody.tsx");
+const { normalizeDisplayMath } = await jiti.import("../lib/markdown.ts");
 
 function renderMarkdown(markdown) {
   return renderToStaticMarkup(
@@ -48,4 +49,88 @@ test("still renders double-tilde strikethrough", () => {
   const html = renderMarkdown("~~gone~~");
 
   assert.match(html, /<del>gone<\/del>/);
+});
+
+test("renders LaTeX parenthesis delimiters as inline math", () => {
+  const html = renderMarkdown(String.raw`射线为 \(r_c = K^{-1}p\)。`);
+
+  assert.match(html, /class="katex"/);
+  assert.match(html, /r_c/);
+});
+
+test("renders paired LaTeX bracket delimiters as display math", () => {
+  const html = renderMarkdown(String.raw`\[
+P(\lambda)=o_b+\lambda r_b
+\]`);
+  const oneLineHtml = renderMarkdown(String.raw`\[P(\lambda)=o_b+\lambda r_b\]`);
+
+  assert.match(html, /class="katex-display"/);
+  assert.match(html, /lambda/);
+  assert.match(oneLineHtml, /class="katex-display"/);
+});
+
+test("renders model-emitted bracket-only formula lines as display math", () => {
+  const html = renderMarkdown(String.raw`平均一致性：
+
+[ C(x) = \frac{2}{T(T-1)} \sum_{i<j} S(\hat{y}^{(i)}, \hat{y}^{(j)}) ]`);
+
+  assert.match(html, /class="katex-display"/);
+  assert.match(html, /\\sum/);
+});
+
+test("leaves an unmatched LaTeX bracket delimiter unchanged", () => {
+  const markdown = String.raw`before
+\[
+x + y
+after`;
+
+  assert.equal(normalizeDisplayMath(markdown), markdown);
+});
+
+test("does not normalize LaTeX delimiters inside Markdown code", () => {
+  const markdown = "    \\(indented\\)\n\n`code\n\\(inline\\)`\n\n```text\n\\[\nfenced\n\\]\n```";
+
+  assert.equal(normalizeDisplayMath(markdown), markdown);
+});
+
+test("does not normalize LaTeX delimiters inside raw HTML code", () => {
+  const markdown = "<code>\\(inline\\)</code>\n\n<pre>\n\\(block\\)\n</pre>";
+
+  assert.equal(normalizeDisplayMath(markdown), markdown);
+});
+
+test("does not normalize escaped delimiters or link destinations", () => {
+  const escaped = String.raw`Literal: \\(x+y\\).`;
+  const link = String.raw`[docs](https://example.com/\(manual\))`;
+
+  assert.equal(normalizeDisplayMath(escaped), escaped);
+  assert.equal(normalizeDisplayMath(link), link);
+});
+
+test("file-preview pipeline renders math like the file panel does", async () => {
+  // Mirrors components/FileViewer.tsx: normalize first, then render with the
+  // shared preview plugin arrays. A document opened from the file panel must
+  // not show raw delimiter source.
+  const { markdownPreviewRemarkPlugins, markdownPreviewRehypePlugins, normalizeDisplayMath } =
+    await jiti.import("../lib/markdown.ts");
+  const ReactMarkdown = (await import("react-markdown")).default;
+
+  const source = String.raw`Inline \(a^2+b^2=c^2\) and a block:
+\[
+P(\lambda)=o_b+\lambda r_b
+\]`;
+
+  const html = renderToStaticMarkup(
+    React.createElement(
+      ReactMarkdown,
+      {
+        remarkPlugins: markdownPreviewRemarkPlugins,
+        rehypePlugins: markdownPreviewRehypePlugins,
+      },
+      normalizeDisplayMath(source),
+    ),
+  );
+
+  assert.match(html, /class="katex"/);
+  assert.match(html, /class="katex-display"/);
 });
